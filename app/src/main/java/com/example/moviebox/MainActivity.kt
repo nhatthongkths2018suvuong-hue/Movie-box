@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
@@ -23,6 +24,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -128,6 +130,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashHandler()
         setContentView(R.layout.activity_main)
         prefs = getSharedPreferences("moviebox", MODE_PRIVATE)
         root = findViewById(R.id.root)
@@ -196,6 +199,8 @@ class MainActivity : AppCompatActivity() {
         updateAspectUi()
         ui.post(ticker)
 
+        checkLastCrash()
+
         val perm = Manifest.permission.READ_EXTERNAL_STORAGE
         if (ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED) {
             startBrowsing()
@@ -207,7 +212,10 @@ class MainActivity : AppCompatActivity() {
     private fun setupPlayer() {
         // Thiếu codec (AC3, DTS, TrueHD...) thì tự dùng bộ giải mã FFmpeg đi kèm
         val rf = DefaultRenderersFactory(this)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setExtensionRendererMode(
+                if (prefs.getBoolean("ffmpeg_off", false)) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+                else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+            )
             .setEnableDecoderFallback(true)
         player = ExoPlayer.Builder(this, rf).build()
         player.setVideoSurfaceView(surface)
@@ -263,6 +271,7 @@ class MainActivity : AppCompatActivity() {
         // Phim không phát nền: thoát ra ngoài thì tạm dừng
         player.pause()
         updatePlayIcon()
+        getSharedPreferences("crash", MODE_PRIVATE).edit().remove("playing").apply()
         super.onStop()
     }
 
@@ -270,6 +279,59 @@ class MainActivity : AppCompatActivity() {
         ui.removeCallbacksAndMessages(null)
         player.release()
         super.onDestroy()
+    }
+
+    // ---------- Ghi lại lỗi để báo cáo ----------
+
+    private fun summarize(e: Throwable): String {
+        val sb = StringBuilder()
+        var t: Throwable? = e
+        var depth = 0
+        while (t != null && depth < 5) {
+            sb.append(if (depth == 0) "" else "Nguyên nhân: ").append(t.javaClass.name).append(": ").append(t.message).append('\n')
+            t.stackTrace.take(6).forEach { sb.append("  tại ").append(it).append('\n') }
+            t = t.cause
+            depth++
+        }
+        return sb.toString()
+    }
+
+    private fun installCrashHandler() {
+        val old = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                getSharedPreferences("crash", MODE_PRIVATE).edit().putString(
+                    "last",
+                    "Máy: " + Build.MODEL + ", Android " + Build.VERSION.RELEASE + ", " +
+                        Build.SUPPORTED_ABIS.joinToString(",") + "\nLuồng: " + t.name + "\n" + summarize(e)
+                ).commit()
+            } catch (x: Throwable) {
+            }
+            old?.uncaughtException(t, e)
+        }
+    }
+
+    private fun checkLastCrash() {
+        val cp = getSharedPreferences("crash", MODE_PRIVATE)
+        val last = cp.getString("last", null)
+        val playing = cp.getString("playing", null)
+        if (last == null && playing == null) return
+        cp.edit().clear().commit()
+        val ffOff = prefs.getBoolean("ffmpeg_off", false)
+        val msg = StringBuilder()
+        if (playing != null) msg.append("Đang mở video: ").append(playing).append("\n\n")
+        msg.append(last ?: "Không có chi tiết lỗi (nhiều khả năng lỗi nằm ở bộ giải mã).")
+        msg.append("\n\nBộ giải mã bổ sung hiện: ").append(if (ffOff) "TẮT" else "BẬT")
+        AlertDialog.Builder(this)
+            .setTitle("Lần trước app bị đóng đột ngột")
+            .setMessage(msg.toString())
+            .setPositiveButton("Đóng", null)
+            .setNeutralButton(if (ffOff) "Bật bộ giải mã bổ sung" else "Tắt bộ giải mã bổ sung") { _, _ ->
+                prefs.edit().putBoolean("ffmpeg_off", !ffOff).commit()
+                toast("Hãy mở lại app để áp dụng")
+                finish()
+            }
+            .show()
     }
 
     // ---------- Phím điều khiển ----------
@@ -569,6 +631,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun play(f: File) {
+        getSharedPreferences("crash", MODE_PRIVATE).edit().putString("playing", f.name).commit()
         if (!fullscreen) enterFullscreen()
         val old = current
         current = f
