@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+android {
+    namespace 'com.example.moviebox'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'com.example.moviebox'
+        minSdk 23
+        targetSdk 23
+        versionCode 1
+        versionName '1.0'
+        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
+    kotlinOptions { jvmTarget = '17' }
+    lint { abortOnError false; checkReleaseBuilds false }
+    buildTypes {
+        release {
+            // Bản release: không debuggable, thu gọn code + tài nguyên -> APK nhẹ hơn, chạy nhanh hơn bản debug.
+            // Ký bằng khóa debug để cài trực tiếp được. Nếu bản này gặp lỗi lạ, đổi minifyEnabled/shrinkResources thành false.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'androidx.media3:media3-exoplayer:1.3.1'
+    implementation 'org.jellyfin.media3:media3-ffmpeg-decoder:1.3.1+1'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+}
