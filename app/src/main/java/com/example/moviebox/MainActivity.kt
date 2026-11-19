@@ -7,6 +7,11 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
+import android.text.SpannableStringBuilder
+import android.text.style.AbsoluteSizeSpan
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
@@ -36,7 +41,10 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
+import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.RenderersFactory
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -63,6 +71,10 @@ class MainActivity : AppCompatActivity() {
         const val KIND_UP = 0
         const val KIND_DIR = 1
         const val KIND_FILE = 2
+        val FF_MIMES = setOf(
+            MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_E_AC3, MimeTypes.AUDIO_E_AC3_JOC,
+            MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_HD, MimeTypes.AUDIO_DTS_EXPRESS, MimeTypes.AUDIO_TRUEHD
+        )
         val SUB_EXT = setOf("srt", "ass", "ssa", "vtt", "ttml", "dfxp")
         const val OSD_MS = 6000L
         const val SEEK_MS = 10000L
@@ -87,7 +99,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pathV: TextView
     private lateinit var hud: TextView
     private lateinit var subV: TextView
-    private var subText = ""
+    private var subText: CharSequence = ""
     private lateinit var seek: SeekBar
     private lateinit var btnPlay: ImageButton
     private lateinit var btnRepeat: ImageButton
@@ -215,12 +227,17 @@ class MainActivity : AppCompatActivity() {
 
     // Mặc định dùng bộ giải mã của máy. Bộ FFmpeg chỉ được bật khi video có âm thanh mà máy không giải mã được.
     private fun buildPlayer(withFfmpeg: Boolean) {
-        val rf = DefaultRenderersFactory(this)
-            .setExtensionRendererMode(
-                if (withFfmpeg) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
-                else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
-            )
+        val base = DefaultRenderersFactory(this)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
             .setEnableDecoderFallback(true)
+        val rf: RenderersFactory = if (!withFfmpeg) base else RenderersFactory { handler, videoL, audioL, textOut, metaOut ->
+            val list = base.createRenderers(handler, videoL, audioL, textOut, metaOut).toMutableList()
+            val ff = FfmpegAudioRenderer(handler, audioL, DefaultAudioSink.Builder(this).build())
+            // Đặt trước bộ giải mã âm thanh của máy để video AC3/DTS... dùng FFmpeg
+            val idx = list.indexOfFirst { it.trackType == C.TRACK_TYPE_AUDIO }
+            list.add(if (idx >= 0) idx else list.size, ff)
+            list.toTypedArray()
+        }
         player = ExoPlayer.Builder(this, rf).build()
         ffmpegOn = withFfmpeg
         player.setVideoSurfaceView(surface)
@@ -257,14 +274,37 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
-            if (tracks.containsType(C.TRACK_TYPE_AUDIO) && !tracks.isTypeSupported(C.TRACK_TYPE_AUDIO)) {
-                if (!ffmpegOn && !prefs.getBoolean("ffmpeg_blocked", false)) ui.post { reloadWithFfmpeg() }
-                else showHud("Máy không giải mã được âm thanh của video này", 3000L)
+            var needFf = false
+            for (g in tracks.groups) {
+                if (g.type != C.TRACK_TYPE_AUDIO) continue
+                for (i in 0 until g.length) {
+                    val m = g.getTrackFormat(i).sampleMimeType
+                    if (g.isTrackSelected(i) && m != null && m in FF_MIMES) needFf = true
+                }
+            }
+            val unsupported = tracks.containsType(C.TRACK_TYPE_AUDIO) && !tracks.isTypeSupported(C.TRACK_TYPE_AUDIO)
+            if (needFf || unsupported) {
+                if (ffmpegOn) {
+                    if (unsupported) showHud("Máy không giải mã được âm thanh của video này", 3000L)
+                } else if (prefs.getBoolean("ffmpeg_blocked", false)) {
+                    showHud("Bộ giải mã âm thanh bổ sung đang bị tắt, video này có thể không có tiếng", 3000L)
+                } else ui.post { reloadWithFfmpeg() }
             }
         }
 
         override fun onCues(cueGroup: CueGroup) {
-            subText = cueGroup.cues.mapNotNull { it.text?.toString() }.joinToString("\n")
+            val sb = SpannableStringBuilder()
+            for (c in cueGroup.cues) {
+                val t = c.text ?: continue
+                if (sb.isNotEmpty()) sb.append('\n')
+                sb.append(t)
+            }
+            // Giữ in đậm / nghiêng / gạch chân; bỏ màu và cỡ chữ riêng của file phụ đề
+            strip(sb, ForegroundColorSpan::class.java)
+            strip(sb, BackgroundColorSpan::class.java)
+            strip(sb, AbsoluteSizeSpan::class.java)
+            strip(sb, RelativeSizeSpan::class.java)
+            subText = sb
             updateSubtitle()
         }
 
@@ -614,6 +654,10 @@ class MainActivity : AppCompatActivity() {
         }
         player.play()
         updatePlayIcon()
+    }
+
+    private fun <T> strip(sb: SpannableStringBuilder, cls: Class<T>) {
+        for (sp in sb.getSpans(0, sb.length, cls)) sb.removeSpan(sp)
     }
 
     private fun updateSubtitle() {
