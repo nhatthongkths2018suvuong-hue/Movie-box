@@ -645,6 +645,31 @@ class MainActivity : AppCompatActivity() {
         return fs.filter { !it.name.startsWith(".") && it.extension.lowercase() in EXT }.sortedWith(byName)
     }
 
+    // Thư mục có video (ở chính nó hoặc trong thư mục con) thì mới hiện.
+    // Kết quả được nhớ suốt lần chạy app, khởi động lại app mới quét lại.
+    private val videoCache = ConcurrentHashMap<String, Boolean>()
+
+    private fun hasVideo(d: File, depth: Int, token: Int): Boolean {
+        val key = d.path
+        videoCache[key]?.let { return it }
+        val fs = d.listFiles()
+        var found = false
+        if (fs != null) {
+            found = fs.any { !it.name.startsWith(".") && it.isFile && it.extension.lowercase() in EXT }
+            if (!found && depth < 12) {
+                for (x in fs) {
+                    if (token != loadToken) return false   // bị huỷ: không lưu kết quả dở dang
+                    if (x.isDirectory && !x.name.startsWith(".") && x.name != "Android" && hasVideo(x, depth + 1, token)) {
+                        found = true
+                        break
+                    }
+                }
+            }
+        }
+        videoCache[key] = found
+        return found
+    }
+
     private fun loadDir(dir: File?, focusFile: File? = null) {
         currentDir = dir
         val token = ++loadToken
@@ -666,7 +691,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 dirs.sortWith(byName)
                 vids.sortWith(byName)
-                dirs.forEach { items.add(Entry(it, it.name, KIND_DIR)) }
+                dirs.forEach {
+                    if (token != loadToken) return@Thread   // người dùng đã chuyển sang thư mục khác
+                    if (hasVideo(it, 1, token)) items.add(Entry(it, it.name, KIND_DIR))
+                }
                 tr = vids
                 vids.forEach { items.add(Entry(it, it.name, KIND_FILE)) }
             }
@@ -969,11 +997,7 @@ class MainActivity : AppCompatActivity() {
             h.text.text = e.label
             h.icon.setImageResource(if (e.kind == KIND_FILE) R.drawable.ic_movie else R.drawable.ic_folder)
             val playing = e.kind == KIND_FILE && e.file == current
-            val c = when {
-                playing -> 0xFFFFFFFF.toInt()
-                e.kind == KIND_FILE -> 0xFFB0BEC5.toInt()
-                else -> 0xFFFFD54F.toInt()
-            }
+            val c = 0xFFFFFFFF.toInt()   // toàn bộ danh sách chữ trắng; video đang phát phân biệt bằng chữ đậm
             h.text.setTextColor(c)
             h.text.setTypeface(null, if (playing) Typeface.BOLD else Typeface.NORMAL)
             h.icon.setColorFilter(c)
